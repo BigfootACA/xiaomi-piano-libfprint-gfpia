@@ -1,0 +1,73 @@
+Out-of-tree kernel modules for the Xiaomi Pad 8 Pro
+===================================================
+
+  xiaomi-fp-uio-dkms/    The Linux side of the fingerprint sensor.
+
+Why out of tree
+---------------
+
+The sensor's SPI bus belongs to TrustZone, so Linux never sees an image or a
+template. What is left on this side is a supply, a reset line and an
+interrupt - and no subsystem upstream owns a device like that, so the driver
+has nowhere to land yet. Keeping it out of tree means the kernel can be a
+plain mainline build, and the module can change without rebuilding it.
+
+
+What it is
+----------
+
+A UIO device. read() blocks until the sensor's event count moves, poll() works,
+and open()/release() are wired to runtime PM - which is where the supply is
+raised and the reset line pulsed. There is no ioctl at all, and no netlink.
+
+Opening it brings the sensor up. Closing it puts the sensor back into reset
+with its rail off, including when it closes because the process died, which is
+what the ioctl version got wrong.
+
+The interrupt stays this driver's own (UIO_IRQ_CUSTOM) rather than the UIO
+core's, because a wake IRQ cannot be handed to the core and the sensor is meant
+to wake the machine.
+
+uio_pdrv_genirq would very nearly do instead of a driver at all. It is not
+used because binding it means claiming its single of_id module parameter for
+this sensor, and then nobody on the machine can use it for anything else.
+
+
+Installing
+----------
+
+    cd xiaomi-fp-uio-dkms && makepkg -f          # not as root
+    sudo pacman -U *.pkg.tar.zst
+
+DKMS then rebuilds it for each kernel, which needs the kernel's build tree at
+/lib/modules/$(uname -r)/build. On this machine the kernel is cross-built on
+another host, so that link points at a directory that is not there; until a
+headers package exists, build the module where the kernel was built:
+
+    make KDIR=/tmp/linux/build-piano ARCH=arm64 LLVM=1
+
+LLVM=1 matters - the kernel is built with clang, and gcc will not accept the
+flags its build passes down.
+
+
+Binding it to the shipped device tree
+-------------------------------------
+
+The device tree that ships in boot_b calls the sensor "xiaomi,xiaomi-fp",
+which the driver still matches. The name it should have is the sensor's own,
+"goodix,gf3656zs1"; goodix,gf3656zs1.yaml describes that binding, for the day
+the device tree is fixed and for an eventual submission upstream.
+
+If a kernel still has the old drivers/input/misc/xiaomi-side-fingerprint.c
+built in, it claims the device first and this module will not bind. To try
+this one without rebuilding the kernel:
+
+    echo fingerprint > /sys/bus/platform/drivers/xiaomi-fp/unbind
+    modprobe xiaomi-fp-uio
+
+
+What uses it
+------------
+
+libfprint/ - the libfprint driver. It finds the
+device by the name in /sys/class/uio/uioN/name, not by a fixed minor.

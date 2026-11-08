@@ -1,0 +1,103 @@
+# Maintainer: Junhao Xie <bigfoot@radxa.com>
+#
+# libfprint has no plugin ABI - its drivers are compiled into libfprint-2.so -
+# so a driver that is not upstream can only be shipped by replacing the
+# library. This package is the distribution's libfprint with one driver added,
+# and it takes libfprint's place so that pacman stops overwriting it.
+
+pkgname=libfprint-xiaomi-piano
+pkgver=1.94.100
+pkgrel=1
+pkgdesc='Library for fingerprint readers, with the Xiaomi Pad 8 Pro side sensor driver'
+arch=('aarch64')
+url='https://fprint.freedesktop.org/'
+license=('LGPL-2.1-or-later AND GPL-2.0-or-later')
+groups=('fprint')
+depends=('libgcc' 'glib2' 'glibc' 'libgudev' 'libgusb' 'openssl' 'pixman')
+makedepends=('meson' 'ninja' 'gobject-introspection' 'gettext' 'python')
+provides=("libfprint=${pkgver}" 'libfprint-2.so=2-64')
+conflicts=('libfprint')
+replaces=('libfprint')
+options=('!debug')
+source=("libfprint-v${pkgver}.tar.gz::https://gitlab.freedesktop.org/libfprint/libfprint/-/archive/v${pkgver}/libfprint-v${pkgver}.tar.gz"
+        'gfpia.c'
+        'gfpia.h'
+        'gfpia-tee.c'
+        'gfpia-tee.h'
+        'xiaomi-piano.c')
+sha256sums=('edc90e02f330a7595ceaf37f2c6ec32ed43541347fe936d3273b0bb2524fd19c'
+            'SKIP'
+            'SKIP'
+            'SKIP'
+            'SKIP'
+            'SKIP')
+
+prepare() {
+	cd "libfprint-v${pkgver}"
+
+	install -d libfprint/drivers/xiaomi-piano
+	install -m 644 "${srcdir}"/gfpia.c "${srcdir}"/gfpia.h \
+		"${srcdir}"/gfpia-tee.c "${srcdir}"/gfpia-tee.h \
+		"${srcdir}"/xiaomi-piano.c libfprint/drivers/xiaomi-piano/
+
+	python - <<'PYTHON'
+# Two places have to learn about the driver. The top-level meson.build owns
+# which drivers the "default" and "all" sets contain; libfprint/meson.build
+# owns which files each one is built from. Registering in only the second is
+# enough to build the driver by name, but not to have it in a normal build.
+path = "meson.build"
+text = open(path).read()
+entry = "    'xiaomi_piano': { 'virtual': true },\n"
+if "xiaomi_piano" not in text:
+    anchor = "    'virtual_image': "
+    at = text.index(anchor)
+    text = text[:at] + entry + text[at:]
+    open(path, "w").write(text)
+    print("meson.build: driver registered in the default set")
+
+# It is declared virtual because that is what it is to libfprint: not a USB or
+# a udev device, so no udev rule is generated for it. It is deliberately not
+# marked optional, which is what puts it in the default set rather than only
+# in "all".
+
+path = "libfprint/meson.build"
+text = open(path).read()
+entry = """    'xiaomi_piano' : files(
+        'drivers/xiaomi-piano/xiaomi-piano.c',
+        'drivers/xiaomi-piano/gfpia.c',
+        'drivers/xiaomi-piano/gfpia-tee.c',
+    ),
+"""
+if "xiaomi_piano" not in text:
+    anchor = "    'elanmoc' : files('drivers/elanmoc/elanmoc.c'),\n"
+    at = text.index(anchor) + len(anchor)
+    open(path, "w").write(text[:at] + entry + text[at:])
+    print("libfprint/meson.build: sources added")
+
+# 1.94.100 iterates a dict with one loop variable, which meson 1.12 refuses.
+path = "tests/meson.build"
+text = open(path).read()
+old = "    foreach driver_test: drivers_tests\n"
+if old in text:
+    open(path, "w").write(
+        text.replace(old, "    foreach driver_test, _ : drivers_tests\n", 1))
+    print("tests/meson.build: made meson 1.12 safe")
+PYTHON
+}
+
+build() {
+	# doc is off because it needs gtk-doc, which this machine does not have
+	# and which produces documentation only. Everything else matches what the
+	# distribution ships, so that replacing its package loses nothing.
+	arch-meson "libfprint-v${pkgver}" build \
+		-Dintrospection=true \
+		-Ddoc=false \
+		-Dgtk-examples=false \
+		-Dinstalled-tests=false \
+		-Ddrivers=default
+	meson compile -C build
+}
+
+package() {
+	meson install -C build --destdir "${pkgdir}"
+}

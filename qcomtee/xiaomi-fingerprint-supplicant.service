@@ -1,0 +1,13 @@
+[Unit]
+Description=Secure storage for the Xiaomi Pad 8 Pro fingerprint application
+Documentation=file:/usr/share/doc/xiaomi-piano-fp-supplicant/goodix-gfpia.md
+Before=fprintd.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/qcomtee-fs-supplicant --state-root /var/lib/xiaomi-fingerprint
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

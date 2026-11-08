@@ -1,0 +1,12 @@
+.claude/
+firmware/piano-fp/
+libfprint/gfpia-test
+qcomtee/qcomtee-qseecom
+qcomtee/qcomtee-fs-supplicant
+qcomtee/xiaomi-fp-run
+*/src/
+*/pkg/
+*/*/src/
+*/*/pkg/
+*.pkg.tar.zst
+*.tar.gz

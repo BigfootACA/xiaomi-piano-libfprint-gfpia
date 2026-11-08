@@ -1,0 +1,37 @@
+# Maintainer: BigfootACA <bigfoot@classfun.cn>
+#
+# The Goodix fingerprint trusted application and the data that initialises it,
+# taken off this machine's own Android installation.
+#
+# gfpia.mdt plus gfpia.b00..b08 are the split signed image; the loader will
+# only take it reassembled, which the driver does. The request-NNNN.bin and
+# payload-NNNN.bin pairs are the initialisation commands, and the six 1113
+# payloads are Goodix's algorithm models - half a megabyte each, which is why
+# they are shipped rather than generated.
+
+pkgname=xiaomi-piano-fp-firmware
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Goodix fingerprint trusted application and models for the Xiaomi Pad 8 Pro'
+arch=('any')
+url='https://github.com/BigfootACA/xiaomi-piano-libfprint-gfpia'
+license=('LicenseRef-proprietary')
+options=('!strip')
+
+# The blobs are kept loose in piano-fp/ rather than as a tarball, so that a
+# changed one is visible. makepkg will not take a directory as a source, and
+# naming thirty files here would only rot, so package() reads them where they
+# are. This is a local package and will never be built anywhere else.
+package() {
+	local dest="${pkgdir}/usr/lib/firmware/qcom/sm8750/xiaomi/piano-fp"
+	local count
+
+	count=$(find "${startdir}/piano-fp" -maxdepth 1 -type f | wc -l)
+	if [ "${count}" -ne 30 ]; then
+		error "expected 30 files in piano-fp, found ${count}"
+		return 1
+	fi
+
+	install -dm755 "${dest}"
+	install -m644 "${startdir}"/piano-fp/* "${dest}/"
+}

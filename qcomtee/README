@@ -1,0 +1,334 @@
+qcomtee-qseecom
+================
+
+This is a diagnostic userspace client for the QSEECom compatibility service
+provided by modern Qualcomm TEE firmware. On recent SoCs, including SM8750,
+QSEECom_start_app() is implemented on top of the SMCInvoke object protocol
+instead of the legacy /dev/qseecom ABI.
+
+The tool uses the generic Linux TEE object-reference ABI exposed by qcomtee:
+
+  root -> registerLegacy -> ClientEnv -> open(UID 122)
+       -> QSEEComCompatAppLoader -> lookupTA/loadFromBuffer
+
+Build it natively or for the target:
+
+  make -C qcomtee
+  make -C qcomtee CROSS_COMPILE=aarch64-linux-gnu-
+
+Examples:
+
+  qcomtee-qseecom self-test-hmac
+  qcomtee-qseecom probe
+  qcomtee-qseecom probe-keymaster-service-version
+  qcomtee-qseecom probe-keymaster-service-init
+  qcomtee-qseecom probe-keymaster-service-keymint-version
+  qcomtee-qseecom probe-keymaster-service-date-support
+  qcomtee-qseecom probe-keymaster-service-configure
+  qcomtee-qseecom probe-keymaster-service-shared-hmac
+  qcomtee-qseecom probe-keymaster-service-shared-hmac-private
+  qcomtee-qseecom probe-keymaster-service-shared-hmac-direct-private \
+          keymaster64 /root/keymaster64-current-slot-reconstructed.elf
+  qcomtee-qseecom lookup fpapp
+  qcomtee-qseecom load fpapp /lib/firmware/qcom/xiaomi/piano --hold
+  qcomtee-qseecom send fpapp - request.bin response.bin 4096
+  qcomtee-qseecom send-modified gfpia - request.bin payload.bin \
+          response.bin payload-out.bin 64 request-out.bin
+  xiaomi-fp-run --pass-fp-fd qcomtee-qseecom \
+          send-gfpia-1000-1001 gfpia /boot/image \
+          request-1000.bin payload-1000.bin response-1000.bin \
+          payload-out-1000.bin request-out-1000.bin \
+          request-1001.bin payload-1001.bin response-1001.bin \
+          payload-out-1001.bin request-out-1001.bin [--hlos-init]
+  xiaomi-fp-run --pass-fp-fd qcomtee-qseecom \
+          send-gfpia-1000-1001-1005 gfpia /boot/image \
+          request-1000.bin payload-1000.bin response-1000.bin \
+          payload-out-1000.bin request-out-1000.bin \
+          request-1001.bin payload-1001.bin response-1001.bin \
+          payload-out-1001.bin request-out-1001.bin \
+          request-1005.bin payload-1005.bin response-1005.bin \
+          payload-out-1005.bin request-out-1005.bin
+  goodix-gfpia-gen.py piano-init \
+          --cap-s-model piano-goodix-cap-s-2.bin \
+          --mistouch-model piano-goodix-mistouch.bin \
+          --output-dir piano-init-input
+  mkdir piano-init-output
+  xiaomi-fp-run --pass-fp-fd qcomtee-qseecom \
+          send-gfpia-piano-init gfpia /boot/image \
+          piano-init-input piano-init-output
+  goodix-gfpia-gen.py piano-active-group \
+          --cap-s-model piano-goodix-cap-s-2.bin \
+          --mistouch-model piano-goodix-mistouch.bin \
+          --output-dir piano-active-group-input
+  mkdir piano-active-group-output
+  xiaomi-fp-run --pass-fp-fd qcomtee-qseecom \
+          send-gfpia-piano-active-group gfpia /boot/image \
+          piano-active-group-input piano-active-group-output
+  mkdir piano-hmac-output
+	  xiaomi-fp-run --pass-fp-fd qcomtee-qseecom \
+	          send-gfpia-piano-hmac gfpia /boot/image \
+	          piano-active-group-input piano-hmac-output \
+	          /root/keymaster64-slot-b-reconstructed.elf
+
+For load, SOURCE can be a reconstructed ELF image or a directory containing
+APP.b00, APP.b01, and so on. Split images are reconstructed using program
+header offsets in APP.b00, matching Qualcomm's SM8750 securemsm driver. The
+kernel transport limits a single invocation to a 4 MiB inbound buffer. Images
+that fit use loadFromBuffer; larger images, including piano's gfpia, are placed
+in QTEE shared memory and loaded with loadFromRegion.
+
+The credentials used for registerLegacy match Qualcomm's in-kernel QSEECom
+compatibility client (UID 1000, package UefiSmcInvoke). Secure firmware still
+enforces its own service and TA policy. A successful lookup/load only proves
+that the compatibility object and TA are reachable; it does not establish the
+fingerprint command protocol.
+
+`probe-keymaster-service-version` follows the KeyMint service's object path:
+ClientEnv UID 151 returns an IAppClient,
+`IAppClient.getAppObject("keymaster64")` returns an IOpener, and
+`IOpener.open(150)` returns the IKMHal object. It sends only Keymaster command
+`0x200` through IKMHal and prints the non-secret version fields. It neither
+uses the QSEECom app loader nor requests HMAC material.
+
+`probe-keymaster-service-init` extends the same path with the fixed
+set-version request observed in the public SM8750 KeyMint client. It first
+requires a successful `0x200`, then sends the 24-byte request
+`[0x207, 4, 5, 4, 5, 0]` on the same IKMHal object. It stops before Keymaster
+configure, shared-HMAC commands, and all fingerprint hardware operations.
+
+`probe-keymaster-service-keymint-version` repeats the successful `0x200` and
+`0x207` lifecycle, then sends the first non-legacy configure prerequisite from
+the public Xiaomi SM8750 Keymaster client. The exact request is command
+`0x3121` followed by the five-byte CBOR map `{ 11: 300 }`. It stops before the
+`0x2116` configure-parameter request, shared-HMAC commands, GFPiA, and all
+fingerprint hardware operations.
+
+`probe-keymaster-service-date-support` repeats get-version and set-version on
+one IKMHal object, then sends the 12-byte legacy query used by the public
+Xiaomi client: little-endian command `0x215` followed by eight zero bytes. A
+zero status selects full `YYYYMMDD` patchlevels; status `-40` selects
+`YYYYMM`. It stops before `0x3121`, configure, HMAC, GFPiA, and all fingerprint
+hardware operations.
+
+`probe-keymaster-service-configure` repeats the successful `0x200`, `0x207`,
+and `0x3121` lifecycle, then sends a fixed Piano `0x2116` CBOR parameter map.
+The values come from the preserved Android A slot: OS version `160000`, OS
+patchlevel `20260701`, and vendor patchlevel `20260201`. It stops before HMAC,
+GFPiA, and all fingerprint hardware operations.
+
+`probe-keymaster-service-shared-hmac` keeps one IKMHal object for the fixed
+sequence `0x200`, `0x207`, the 12-byte `0x215` date query, `0x3121`, the
+three-tag full-date `0x2116` configure request, `0x220e`, and one `0x220f`.
+The date query must return status zero; the month-only `-40` result stops the
+sequence before configure or HMAC. Before `0x220e`, the process disables core
+dumps and makes itself non-dumpable, failing closed if either operation fails.
+The get response must be exact canonical CBOR with 32-byte seed and nonce
+values. The compute request returns that pair immediately as one standard
+64-byte record, and its response must contain an exact 32-byte sharing check.
+All response and secret-bearing buffers are cleared on every path and no
+contents are printed or persisted. This bounded probe does not try the
+72-byte extension, retry `0x220f`, invoke private `0x205`, load GFPiA, or open
+the fingerprint device.
+
+`probe-keymaster-service-shared-hmac-private` is the only service CLI that
+sends the private request `{ command = 0x205, selector = 2 }`. It keeps one
+IKMHal object for the complete sequence `0x200`, `0x207`, the full-date
+`0x215` gate, `0x3121`, the three-tag `0x2116` configure request, `0x220e`,
+one `0x220f`, and exactly one `0x205`. It inherits the fail-closed core-dump
+and process-dump hardening applied before `0x220e`. Any failure stops the
+sequence and the private command is never retried.
+
+IKMHal can report its complete output capacity for the private command. A
+zero-status result must therefore contain at least 0x100 bytes, but validation
+uses only a borrowed fixed 0x100-byte logical view. Encapsulated-message bounds
+must fit that view and cannot extend into the transport tail. The complete
+owning service output, private request, and every shared-HMAC temporary are
+cleared on all paths. No secret bytes are printed or persisted. This isolated
+probe stops after validating the private response; it does not load GFPiA,
+issue command 109, use the QSEECom app loader, or open the fingerprint device.
+The older incomplete service sequence `0x200 -> 0x207 -> 0x205` is not exposed
+as a CLI.
+
+`probe-keymaster-service-shared-hmac-direct-private` is a separate direct
+fallback and requires the fixed app name `keymaster64` plus an explicit
+`SOURCE`. The source must be a reconstructed ELF or split-image directory from
+the device's current slot. The client validates that source before opening the
+Keymaster service, immediately clears its validation owner, then completes
+`0x200 -> 0x207 -> 0x215 -> 0x3121 -> 0x2116 -> 0x220e -> 0x220f` on one
+IKMHal object. Only after every public gate succeeds does it open the UID 122
+QSEECom app loader and obtain a direct controller with the normal
+lookup-or-load behavior. The log states whether the TA was already available
+through lookup or was loaded from the validated source.
+
+The fallback never sends service command `0x205`. It sends the direct request
+`{ command = 0x205, selector = 2 }` exactly once, requires the returned request
+to remain the same eight bytes, and requires an exact 0x100-byte response with
+message bounds wholly inside that fixed envelope. The direct controller is
+released, and the request, returned request, and complete response owner are
+cleared on every path. It stops without a retry, GFPiA, command 109, the
+fingerprint device, or any response export. `SOURCE` is structurally checked,
+but the client cannot determine the active Android slot; selecting the actual
+current-slot image remains an operator requirement.
+
+The send-modified command covers the one-buffer ABI used by piano's Goodix
+fingerprint client: it allocates QTEE shared memory for PAYLOAD, passes it as
+the first memory object, and asks QSEEComCompat to patch its address at offset
+0 in REQUEST. The four-entry embedded-offset array is retained to match the
+legacy modified-command ABI; the other three memory objects are NULL. RESPONSE
+and the possibly modified payload are written to separate output files.
+Supplying the optional REQUEST_OUT argument after RESPONSE_SIZE also saves the
+request bytes returned by QSEEComCompat, so the memory-object patch can be
+verified without putting a physical address in the input request.
+
+Do not use the plain send command with gfpia. Every observed gfpia business
+request uses QSEECom_send_modified_cmd; omitting the memory object leaves a
+zero secure-side payload address and can reboot the device. The tool rejects
+that combination. For gfpia, send-modified also requires a 0x80-byte request,
+a 0x40-byte response, a zero 64-bit patch field at request offset 0, and a
+payload file whose size matches the uint32 value at request offset 0x24. The
+first observed command uses a 0x280-byte payload, but send-modified
+intentionally does not synthesize or issue that command. Inspect and validate
+the complete request before invoking an unknown fingerprint operation.
+
+The fixed send-gfpia-1000-1001 command is narrower than send-modified. It only
+accepts the reviewed cold-start inputs: command 1000 at probe level 4 with
+token/sequence 1/0, followed by command 1001 with token/sequence 2/1 and no
+cached OTP. It keeps one QSEECom controller and requires an inherited
+descriptor for the sensor's UIO device from xiaomi-fp-run, which is what proves
+the sensor is powered while the sequence runs. The byte command 1001 carries is
+a constant: the driver that used to be asked for it by ioctl answered zero
+unconditionally. Each command's
+patched request, response, and returned payload are synchronized to disk before
+their status is checked. Any nonzero response status, address outside the low
+32-bit range, or unexpected command-1000 configuration stops the sequence.
+Without a final option, the command stops after validating command 1001, as it
+did before HLOS initialization support was added.
+
+The separate `send-gfpia-1000-1001-1005` command implements the reviewed
+zero-model diagnostic path. It additionally requires command 1005 with
+token/sequence 3/2 and a 0x74-byte payload whose only nonzero input is the
+sequence field. It always performs HLOS initialization: there is no option to
+send command 1005 before `INIT`, `ENABLE_IRQ`, and `CHIP_INFO`. The IRQ remains
+enabled across command 1005, then is disabled on every exit. All three
+commands use the same QSEECom controller, and all nine output files are opened
+before the first secure request so a bad output path cannot interrupt the
+hardware sequence halfway through. Stock permits zero configured model files,
+so this path deliberately sends no command 1113.
+
+Piano's captured command-1000 configuration is not a zero-model
+configuration. It enables both the CAP_S_2 ASP model and the Piano palm
+mistouch model. `send-gfpia-piano-init` implements that device-specific path:
+1000 token/sequence 1/0, 1001 2/1, three ASP transport chunks 3/2 through
+5/4, three palm chunks 6/5 through 8/7, and 1005 9/8. The input directory
+must be created by `goodix-gfpia-gen.py piano-init`; the generator verifies
+both embedded stock-model SHA-256 values and writes a `SHA256SUMS` manifest.
+The output directory must already exist. Before the first secure request the
+client validates all nine request/payload pairs, reconstructs and checks both
+logical model layouts, allocates all shared buffers, and opens all 27 output
+files with `O_EXCL`. It also requires command 1000 to report Piano chip 0x31,
+palm enabled, ASP enabled, and CAP_S rather than CAP_T. Each returned model
+chunk is synchronized and checked before the next chunk. Unlike the stock HAL,
+the tool stops at the first model error rather than swallowing it and
+continuing to command 1005.
+
+`send-gfpia-piano-active-group` is a separate, narrower extension of that
+known-good sequence. It adds class-1 command 1014 at token/sequence 10/9 on
+the same controller, fixes gid to 0, and fixes the only accepted pathname to
+`/data/vendor_de/0/fpdata`. The generator zero-fills the entire 0x270-byte
+payload, places the 24 pathname bytes at offset 0x70, and leaves a NUL at
+0x88. The client validates all ten pairs and opens all 30 output files before
+command 1000. Command 1014 can migrate or synchronize fingerprint state via
+the filesystem listeners; a zero TA status does not prove every optional file
+operation succeeded, so check the supplicant log and state directory as well.
+This command does not fetch or install the Keymaster HMAC key.
+
+`send-gfpia-piano-hmac` extends that exact active-group sequence. After the
+nine initialization requests and command 1014 have succeeded, it sends the
+plain Keymaster request `{ command = 0x205, selector = 2 }`, validates the
+fixed 0x100-byte response, releases the `keymaster64` controller, and passes
+the complete response unchanged to GFPiA class-2 command 109 with token 11.
+The inter-app message is not a normal GFPiA common-prefix payload, so the
+client never writes a sequence at offset 0x44. `KEYMASTER_SOURCE` must point
+to a `keymaster64` ELF reconstructed on the device from that device's current
+slot `keymaster` partition; do not substitute an image from the other slot.
+The Keymaster response and all command-109 HMAC buffers remain in memory:
+their bytes are never printed or written to an output file and are explicitly
+cleared after use, including error cleanup. Only non-secret status information
+is printed.
+
+The HMAC request builders, response bounds, fixed command-109 fields, and
+sensitive-buffer clearing can be checked without a QTEE device:
+
+  qcomtee-qseecom self-test-hmac
+
+The final `--hlos-init` option and both fixed completion sequences are
+explicit hardware-driving extensions. HLOS initialization occurs only after all
+command-1001 outputs have been synchronized to disk and the normal result
+validation has succeeded. An additional gate requires an
+exact 0x168-byte payload, preserved `fw_info`, match version 2, and an OTP
+length no larger than 0xc0. The client then issues `INIT` on the same inherited
+fingerprint fd and requires netlink route 25, followed by `ENABLE_IRQ` and an
+eight-byte, zero-initialized `CHIP_INFO`. The chip vendor byte comes from
+command-1001 payload offset 0x88; mode and operation are the low bytes of 1000
+and 52. Once `ENABLE_IRQ` succeeds, the client attempts `DISABLE_IRQ` on every
+subsequent exit before releasing the QSEECom controller. In the 1005 sequence,
+the TA may return orientation and navigation polarity at payload offsets
+0x6c/0x6e; both enter the TA as zero and are not caller configuration. Do not
+use either hardware-driving path unless the required TrustZone listeners are
+already serving requests; `INIT` can block in secure-world callbacks and
+actively accesses the sensor.
+
+qcomtee-fs-supplicant
+=====================
+
+This target-side filesystem supplicant registers Qualcomm listeners 10 and
+0x7000 for TrustZone applications that use the legacy QSEECom filesystem
+protocols. It also supplies the credentials callback needed to open the
+listener registration service. Four callback workers share one /dev/tee0
+context so a TrustZone request can wait on another listener without deadlocking
+the userspace service.
+
+Run exactly one instance before loading gfpia:
+
+  qcomtee-fs-supplicant --state-root /var/lib/xiaomi-fingerprint
+
+Absolute Android paths are stored below the state root. For example,
+/data/vendor/fpdump/gf_otp_info.so maps to
+/var/lib/xiaomi-fingerprint/data/vendor/fpdump/gf_otp_info.so. Path fields
+follow Qualcomm's C-string ABI: bytes after the first NUL are ignored because
+TrustZone may reuse a request buffer for a shorter path. The supplicant still
+rejects unterminated paths, parent traversal, symlinked path components, and
+non-regular GPFS objects. File handles returned to TrustZone are opaque values
+rather than host file descriptors. Offset-zero GPFS writes use a same-directory
+temporary file, synchronize it, preserve the previous file as .bak, and
+atomically replace the destination.
+
+The built-in protocol and path-safety tests do not access /dev/tee0:
+
+  qcomtee-fs-supplicant --self-test --state-root /tmp/qcomtee-fs-test
+
+The supplicant only services callbacks. It does not synthesize fingerprint
+calibration data and does not touch the sensor.
+
+xiaomi-fp-run
+=============
+
+This target-side diagnostic wrapper holds the sensor's UIO device open while
+running a child command, which is the whole of keeping the sensor powered: the
+driver raises the supply, pulses reset and unmasks the interrupt on open, and
+undoes all of it on close. The wrapper finds the device by the name in
+/sys/class/uio/uioN/name rather than by a fixed minor, and closes it after the
+child exits or when it receives SIGINT, SIGTERM, or SIGHUP.
+
+With --pass-fp-fd, the wrapper passes a duplicate of that open file to the
+child in XIAOMI_FP_FD, so the child can read interrupts from the same
+descriptor rather than opening the device a second time and racing the
+supply.
+
+For example, a separately reviewed gfpia request can be sent while the HLOS
+signals remain configured:
+
+  xiaomi-fp-run qcomtee-qseecom send-modified gfpia /boot/image \
+          request.bin payload.bin response.bin payload-out.bin 64
+
+The wrapper does not create TA requests and does not interpret their results.

@@ -1,0 +1,158 @@
+A libfprint driver for the Xiaomi Pad 8 Pro side fingerprint reader
+==================================================================
+
+The reader is a Goodix sensor driven from the secure world. Images and
+templates never reach Linux: this side starts an operation and then asks the
+trusted application what it made of each finger. That makes it a match-on-chip
+driver with device storage.
+
+What is here
+------------
+
+  gfpia-tee.c/h   Talking to a Qualcomm trusted application: opening the
+                  qcomtee device, reaching the QSEECom compatibility loader,
+                  reassembling a split MDT image, and carrying a request and
+                  its payload across. Lifted unchanged from the program it was
+                  proven with, qcomtee/qcomtee-qseecom.c.
+
+  gfpia.c/h       The fingerprint protocol. Nothing in it blocks: poll the
+                  descriptor gfpia_irq_fd() returns and call gfpia_handle_irq()
+                  when it is readable, which is what lets the driver live
+                  inside libfprint's main loop.
+
+  xiaomi-piano.c  The FpDevice itself.
+
+  gfpia-test.c    Exercises gfpia.c on its own, without libfprint. Worth
+                  reaching for first: a fault reproduced here takes two presses
+                  rather than the thirty-five a full enrolment needs.
+
+The protocol, and where every number in it came from, is in
+qcomtee/goodix-gfpia.md.
+
+What it needs at runtime
+------------------------
+
+  /dev/tee0                   the qcomtee driver
+  /dev/uioN                   the xiaomi-fp-uio module, from kernel/;
+                              found by the name in /sys/class/uio/uioN/name,
+                              not by a fixed minor
+  qcomtee-fs-supplicant       the application's storage, running
+  /lib/firmware/qcom/sm8750/xiaomi/piano-fp/
+                              the application's split image, plus the requests
+                              and payloads that initialise it
+
+The firmware directory holds gfpia.mdt and gfpia.b00..b08 alongside
+request-NNNN.bin and payload-NNNN.bin for 1000, 1001, six 1113 model chunks,
+1005 and 1014. The payloads carry Goodix's sensor configuration and both
+algorithm models, so they are shipped rather than built.
+
+Building it into libfprint
+--------------------------
+
+Copy this directory to libfprint/drivers/xiaomi-piano/ and add it to the
+driver table in libfprint/meson.build:
+
+    'xiaomi_piano' : files(
+        'drivers/xiaomi-piano/xiaomi-piano.c',
+        'drivers/xiaomi-piano/gfpia.c',
+        'drivers/xiaomi-piano/gfpia-tee.c',
+    ),
+
+then
+
+    meson setup build --prefix=/usr --libdir=lib \
+        -Dintrospection=false -Ddoc=false -Dgtk-examples=false \
+        -Dinstalled-tests=false -Ddrivers=xiaomi_piano
+    ninja -C build && ninja -C build install
+
+libfprint 1.94.100 needs one fix to configure under meson 1.12: in
+tests/meson.build, `foreach driver_test: drivers_tests` iterates a dict and
+has to become `foreach driver_test, _ : drivers_tests`.
+
+install.sh does all of the above. It writes straight into /usr, which is what
+makes it useful while working on the driver - but it leaves pacman's idea of
+libfprint wrong, and the next libfprint upgrade silently overwrites it. For a
+machine that is being used rather than worked on, build the package instead.
+
+Building it as a package
+------------------------
+
+PKGBUILD builds libfprint-xiaomi-piano: the distribution's libfprint with this
+one driver added. It replaces and conflicts with libfprint, and provides both
+libfprint and libfprint-2.so, so fprintd is satisfied and pacman stops trying
+to overwrite the library.
+
+    makepkg -f                 # not as root; the driver sources are read from
+    sudo pacman -U *.pkg.tar.zst   # this directory
+
+It builds the -Ddrivers=default set, so every reader the distribution supports
+still works, and it installs the same files the distribution's package does
+apart from the gtk-doc HTML, which needs gtk-doc and is documentation only.
+
+A new upstream libfprint will not be installed on its own any more: nothing
+pulls in a package that something else already provides. Bump pkgver, refresh
+the sha256sum, and rebuild when you want one - and be ready for the two
+grafting points in prepare() to have moved.
+
+How libfprint finds it
+----------------------
+
+It cannot, on its own. libfprint knows USB devices, udev devices that are
+spidev or hidraw nodes, and virtual devices; this reader is a misc character
+device and is none of those. So the driver declares itself virtual and is found
+by the environment variable FP_XIAOMI_PIANO, the way libfprint finds anything
+it cannot enumerate (fp-context.c, around the g_getenv call).
+
+The cleaner answer is a new udev subtype - two places in fp-context.c and two
+in fpi-device.c - which would let the node be matched directly. It is not done
+here, and it would not remove the need for the service drop-in below.
+
+The service drop-in
+-------------------
+
+/etc/systemd/system/fprintd.service.d/xiaomi-piano.conf carries three things
+that are each load-bearing:
+
+  Environment=FP_XIAOMI_PIANO=1     how the device is found at all
+
+  DeviceAllow=/dev/tee0 rw          fprintd ships a device allow-list holding
+  DeviceAllow=char-uio rw           rtc, hidraw, spi and usb. Neither of these
+                                    is on it, and without them opening fails
+                                    with EPERM - while ls shows permissions
+                                    that look perfectly fine. The UIO node is
+                                    allowed by class, since its minor is not
+                                    fixed.
+
+  ReadWritePaths=/var/lib/xiaomi-fingerprint
+                                    ProtectSystem=strict otherwise stops the
+                                    driver dropping the stale detect baseline.
+
+Two behaviours worth knowing
+----------------------------
+
+The application must never be unloaded. Unloading it is accepted, and so is
+loading it again, and then the first command sent to the new copy is refused
+for the rest of the boot. The driver therefore drops only its own references
+when it is done and leaves the application resident; loading it again over a
+copy that is still there works, and hands back a usable controller. Nothing
+short of a reboot undoes an unload, so if the sensor starts refusing to open,
+look for something that called app_unload().
+
+Leaving it loaded costs a resident application and nothing else. The sensor's
+rail and its interrupt are not held by it - they are released through the
+ioctls in gfpia_close() - so the sensor still powers down when fprintd exits
+on idle.
+
+Messages from this driver reach the journal on both streams, and stdout is
+block-buffered there: everything written to it appears at once when the
+process exits, interleaved wrongly with the stderr lines around it. Read the
+order with that in mind, or write to stderr.
+
+The sensor's detect baseline goes stale. gf_fdt_base.so is a calibration
+snapshot, and a bad one stops the sensor reporting fingers at all: startup and
+its reset interrupts still work, touching it does nothing, and nothing anywhere
+reports an error. The application rewrites the file on every initialisation,
+which makes its timestamp look fresh while the contents stay wrong, and it only
+builds a new baseline when the file is absent. The driver therefore removes it
+before initialising. If fingerprints ever stop being noticed, that file is the
+first thing to delete.

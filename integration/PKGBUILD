@@ -1,0 +1,30 @@
+# Maintainer: BigfootACA <bigfoot@classfun.cn>
+#
+# What has to be true for the fingerprint sensor to work, beyond the pieces
+# themselves: fprintd has to be told the device is there, allowed to open it,
+# and allowed to write the sensor's state directory. Installing this and
+# enabling the supplicant is the whole of it.
+
+pkgname=xiaomi-piano-fp
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Fingerprint support for the Xiaomi Pad 8 Pro side sensor'
+arch=('any')
+url='https://github.com/BigfootACA/xiaomi-piano-libfprint-gfpia'
+license=('GPL-2.0-or-later')
+depends=('fprintd'
+         'libfprint-xiaomi-piano'
+         'xiaomi-piano-fp-supplicant'
+         'xiaomi-piano-fp-firmware')
+install=xiaomi-piano-fp.install
+source=('xiaomi-piano.conf')
+sha256sums=('SKIP')
+
+package() {
+	# A package's drop-in belongs under /usr/lib, which leaves the same file
+	# under /etc free for whoever is administering the machine to override
+	# with.
+	install -Dm644 "${srcdir}/xiaomi-piano.conf" \
+		"${pkgdir}/usr/lib/systemd/system/fprintd.service.d/xiaomi-piano.conf"
+
+}

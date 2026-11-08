@@ -1,0 +1,64 @@
+# Maintainer: BigfootACA <bigfoot@classfun.cn>
+#
+# The userspace side of the Qualcomm trusted environment on this machine.
+#
+# Two things come out of the same sources. The supplicant is needed whenever
+# the fingerprint sensor is used: the trusted application keeps its templates
+# in files it cannot reach itself, and asks this to read and write them. The
+# tools are for working on the protocol, not for using the sensor.
+
+pkgbase=qcomtee-piano
+pkgname=('xiaomi-piano-fp-supplicant' 'qcomtee-piano-tools')
+pkgver=1.0.0
+pkgrel=1
+arch=('aarch64')
+url='https://github.com/BigfootACA/xiaomi-piano-libfprint-gfpia'
+license=('GPL-2.0-or-later')
+makedepends=('linux-api-headers>=7.2')
+options=('!debug')
+source=('qcomtee-fs-supplicant.c'
+        'qcomtee-qseecom.c'
+        'xiaomi-fp-run.c'
+        'goodix-gfpia-gen.py'
+        'goodix-gfpia.md'
+        'README'
+        'Makefile'
+        'xiaomi-fingerprint-supplicant.service')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+build() {
+	cd "${srcdir}"
+	make
+}
+
+package_xiaomi-piano-fp-supplicant() {
+	pkgdesc='Secure storage for the Xiaomi Pad 8 Pro fingerprint trusted application'
+	depends=('glibc')
+	install=xiaomi-piano-fp-supplicant.install
+
+	cd "${srcdir}"
+	install -Dm755 qcomtee-fs-supplicant "${pkgdir}/usr/bin/qcomtee-fs-supplicant"
+	install -Dm644 xiaomi-fingerprint-supplicant.service \
+		"${pkgdir}/usr/lib/systemd/system/xiaomi-fingerprint-supplicant.service"
+	install -Dm644 goodix-gfpia.md \
+		"${pkgdir}/usr/share/doc/${pkgname}/goodix-gfpia.md"
+
+	# The templates live here. Only root may look: they are the sealed
+	# objects the trusted application hands over, and the directory is also
+	# where the driver drops the stale detect baseline.
+	install -dm700 "${pkgdir}/var/lib/xiaomi-fingerprint"
+}
+
+package_qcomtee-piano-tools() {
+	pkgdesc='Tools for working on the Qualcomm TEE and Goodix fingerprint protocol'
+	depends=('glibc')
+	optdepends=('python: for goodix-gfpia-gen.py')
+
+	cd "${srcdir}"
+	install -Dm755 qcomtee-qseecom "${pkgdir}/usr/bin/qcomtee-qseecom"
+	install -Dm755 xiaomi-fp-run "${pkgdir}/usr/bin/xiaomi-fp-run"
+	install -Dm755 goodix-gfpia-gen.py "${pkgdir}/usr/bin/goodix-gfpia-gen"
+	install -Dm644 README "${pkgdir}/usr/share/doc/${pkgname}/README"
+	install -Dm644 goodix-gfpia.md \
+		"${pkgdir}/usr/share/doc/${pkgname}/goodix-gfpia.md"
+}

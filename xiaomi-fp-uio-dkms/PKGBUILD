@@ -1,0 +1,37 @@
+# Maintainer: BigfootACA <bigfoot@classfun.cn>
+#
+# The Linux side of the Xiaomi Pad 8 Pro fingerprint sensor, out of tree.
+#
+# It is a UIO driver: the secure world owns the sensor's SPI bus, so all that
+# is left here is a supply, a reset line and an interrupt, and UIO already
+# knows how to hand an interrupt to userspace.
+
+pkgname=xiaomi-fp-uio-dkms
+_module=xiaomi-fp-uio
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='UIO interface to the TrustZone-owned Xiaomi Pad 8 Pro fingerprint sensor (DKMS)'
+arch=('any')
+url='https://github.com/BigfootACA/xiaomi-piano-libfprint-gfpia'
+license=('GPL-2.0-or-later')
+depends=('dkms')
+provides=("${_module}")
+conflicts=("${_module}")
+source=('xiaomi-fp-uio.c'
+        'Makefile'
+        'dkms.conf')
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+	local dest="${pkgdir}/usr/src/${_module}-${pkgver}"
+
+	install -Dm644 -t "${dest}" \
+		"${srcdir}/xiaomi-fp-uio.c" \
+		"${srcdir}/Makefile" \
+		"${srcdir}/dkms.conf"
+
+	# dkms.conf carries the version, so it has to agree with the directory
+	# name dkms was told to look in.
+	sed -i "s/^PACKAGE_VERSION=.*/PACKAGE_VERSION=\"${pkgver}\"/" \
+		"${dest}/dkms.conf"
+}
